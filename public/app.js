@@ -89,6 +89,7 @@ function validSeats() {
   const m = me();
   const alive = G().players.filter((p) => p.alive);
   const add = (f) => alive.filter(f).forEach((p) => out.add(p.seat));
+  const others = (f) => add((p) => p !== m && f(p)); // กติกา: ห้ามเล่นการ์ดใส่ตัวเอง
   if (sel.power) {
     if (m.char === 'mather') { if (sel.t1 === null) add((p) => p !== m); } else if (m.char === 'jproctor') add((p) => p !== m && !hasBlue(p, 'piety'));
     else if (m.char === 'parris') add((p) => p.red.some((r) => r.type === 'accusation'));
@@ -97,14 +98,14 @@ function validSeats() {
   const c = sel.card && handCard(sel.card);
   if (!c) return out;
   const d = M().cards[c.type];
-  if (d.color === 'red') add((p) => p !== m && !hasBlue(p, 'piety'));
-  else if (c.type === 'stocks') add((p) => p !== m && p.char !== 'osborne');
-  else if (c.type === 'arson') add((p) => p !== m && p.char !== 'mcorey');
-  else if (c.type === 'alibi') add(() => true);
-  else if (d.color === 'blue') add((p) => !hasBlue(p, c.type));
-  else if (c.type === 'scapegoat') add((p) => sel.t1 === null || p.seat !== sel.t1);
-  else if (c.type === 'robbery') add((p) => (sel.t1 === null ? p.char !== 'mcorey' : p.seat !== sel.t1));
-  else if (c.type === 'curse') { if (sel.t1 === null) add((p) => p.char !== 'burroughs' && p.blue.length); }
+  if (d.color === 'red') others((p) => !hasBlue(p, 'piety'));
+  else if (c.type === 'stocks') others((p) => p.char !== 'osborne');
+  else if (c.type === 'arson') others((p) => p.char !== 'mcorey');
+  else if (c.type === 'alibi') others(() => true);
+  else if (d.color === 'blue') others((p) => !hasBlue(p, c.type));
+  else if (c.type === 'scapegoat') others((p) => sel.t1 === null || p.seat !== sel.t1);
+  else if (c.type === 'robbery') others((p) => (sel.t1 === null ? p.char !== 'mcorey' : p.seat !== sel.t1));
+  else if (c.type === 'curse') { if (sel.t1 === null) others((p) => p.char !== 'burroughs' && (p.blue.length || G().catSeat === p.seat)); }
   return out;
 }
 function canPower() {
@@ -328,7 +329,8 @@ function seatHTML(p) {
     : `<div class="tr ${c.mine ? 'mine' : ''}" style="background-image:url('${esc(artUrl('misc', 'tryalback') || '')}')" title="${c.mine ? esc(M().tryals[c.kind].name) + ' (คว่ำอยู่)' : 'คว่ำอยู่'}"></div>`)).join('');
   const chips = [
     ...p.blue.map((b) => `<span class="chip blue">${esc(M().cards[b.type].name)}</span>`),
-    p.stocked ? '<span class="chip stk">ขื่อคา</span>' : '',
+    p.stocked ? `<span class="chip stk">ขื่อคา${p.stocked > 1 ? ` ×${p.stocked}` : ''}</span>` : '',
+    g.gavelSeat === p.seat && p.alive ? '<span class="chip gavel" title="ผู้คุ้มกันวางค้อนปกป้องคนนี้ในราตรีล่าสุด">🔨 ค้อน</span>' : '',
     p.witch && p.seat !== g.mySeat && g.phase !== 'over' ? '<span class="chip witch">แม่มด</span>' : '',
   ].join('');
   const badge = p.seat === g.mySeat ? '<span class="sbadge">คุณ</span>' : p.seat === g.activeSeat && g.phase === 'day' ? '<span class="sbadge turnb">ตานี้</span>' : '';
@@ -468,11 +470,11 @@ function promptHTML() {
         const d = M().cards[c.type];
         let step = 'แตะที่นั่งผู้เล่นที่ไฮไลต์สีเขียวบนโต๊ะ';
         if (c.type === 'scapegoat') step = sel.t1 === null ? 'เลือกผู้เล่นคนแรก (ย้ายการ์ด "จาก" คนนี้)' : `ย้ายจาก ${esc(cname(sel.t1))} → เลือกผู้เล่นที่จะรับการ์ด`;
-        if (c.type === 'robbery') step = sel.t1 === null ? 'เลือกผู้เล่นที่จะถูกปล้นการ์ดในมือ' : `ปล้นจาก ${esc(cname(sel.t1))} → เลือกผู้รับ (เลือกตัวเองได้)`;
+        if (c.type === 'robbery') step = sel.t1 === null ? 'เลือกผู้เล่นที่จะถูกปล้นการ์ดในมือ' : `ปล้นจาก ${esc(cname(sel.t1))} → เลือกผู้รับ (ให้ตัวเองไม่ได้)`;
         let extra = '';
         if (c.type === 'curse' && sel.t1 !== null) {
           step = `เลือกการ์ดน้ำเงินหน้า ${esc(cname(sel.t1))} ที่จะทำลาย`;
-          extra = `<div class="choices">${P(sel.t1).blue.map((b) => `<button class="btn sm" data-act="curse" data-id="${b.id}">${esc(M().cards[b.type].name)}</button>`).join('')}</div>`;
+          extra = `<div class="choices">${P(sel.t1).blue.map((b) => `<button class="btn sm" data-act="curse" data-id="${b.id}">${esc(M().cards[b.type].name)}</button>`).join('')}${G().catSeat === sel.t1 ? '<button class="btn sm" data-act="curse" data-id="cat">🐈‍⬛ แมวดำ</button>' : ''}</div>`;
         }
         if (c.type === 'accusation' && m.char === 'abigail' && !m.used) {
           extra += `<label class="btn sm ${sel.abig ? 'on' : ''}" style="margin-top:8px"><input type="checkbox" data-act="abig" ${sel.abig ? 'checked' : ''}> ใช้「เสียงกรีดร้อง」ให้นับ 3 แต้ม (ครั้งเดียว)</label>`;
@@ -606,9 +608,10 @@ function rulesHTML() {
   const t = M().tryalTable;
   return `<div class="rules"><h2>📜 วิธีเล่น เซเลม 1692</h2>
     <p>ทุกคนได้ <b>การ์ดไต่สวน</b> คว่ำไว้หลายใบ ถ้าใครมีการ์ด <b>แม่มด</b> คนนั้นคือแม่มด (แม่มดรู้จักกันเอง) การ์ด <b>ผู้คุ้มกัน</b> มี 1 ใบ ที่เหลือคือ "ไม่ใช่แม่มด"</p>
-    <h3>ในตาของคุณ เลือก 1 อย่าง</h3><ul><li><b>จั่วการ์ด 2 ใบ</b> หรือ</li><li><b>เล่นการ์ดจากมือ</b> กี่ใบก็ได้</li></ul>
+    <h3>รุ่งอรุณ</h3><p>แม่มดแอบเลือกผู้ถือ <b>แมวดำ</b> — ผู้ถือแมวดำเป็นคนเริ่มเล่นก่อน แล้ววนตามเข็มนาฬิกา</p>
+    <h3>ในตาของคุณ เลือก 1 อย่าง</h3><ul><li><b>จั่วการ์ด 2 ใบ</b> หรือ</li><li><b>เล่นการ์ดจากมือ</b> กี่ใบก็ได้ (ถือการ์ดได้ไม่จำกัด)</li></ul><p><b>ห้ามเล่นการ์ดใส่ตัวเอง</b> ทุกกรณี</p>
     <h3>การกล่าวหา</h3><p>การ์ดสีแดงวางหน้าผู้เล่น (กล่าวหา +1, หลักฐาน +3, พยาน +7) เมื่อครบ 7 แต้ม ผู้ที่เล่นใบสุดท้ายเลือกการ์ดไต่สวนที่คว่ำอยู่ของเขา 1 ใบให้เปิด ถ้าเป็น <b>แม่มด</b> ผู้นั้นตายทันที ใครถูกเปิดการ์ดหมดก็ตาย</p>
-    <h3>ราตรี</h3><p>เมื่อมีคนจั่วการ์ดราตรี แม่มดตกลงเลือกเหยื่อ ผู้คุ้มกันเลือกปกป้อง 1 คน แล้วทุกคนเลือกว่าจะ <b>สารภาพ</b> (เปิดการ์ดของตัวเอง 1 ใบ) หรือไม่ ใครสารภาพจะรอดคืนนั้น</p>
+    <h3>ราตรี</h3><p>การ์ดราตรีอยู่ใบล่างสุดของกองจั่วเสมอ เมื่อจั่วถึง แม่มดตกลงเลือกเหยื่อ ผู้คุ้มกันวาง <b>ค้อน</b> หน้าผู้เล่นอื่น 1 คน (ทุกคนเห็น) แล้วทุกคนเลือกว่าจะ <b>สารภาพ</b> (เปิดการ์ดของตัวเอง 1 ใบ) หรือไม่ เหยื่อที่มีค้อน สารภาพ หรือมีสถานพักพิงจะรอด ถ้าการ์ดผู้คุ้มกันถูกเปิด จะไม่มีผู้คุ้มกันอีกต่อไป จากนั้นสับกองทิ้งเป็นกองใหม่ และราตรีกลับไปอยู่ล่างสุด</p>
     <h3>สมรู้ร่วมคิด</h3><p>ผู้จั่วเลือกการ์ดของผู้ถือแมวดำให้เปิด 1 ใบ แล้วทุกคนหยิบการ์ดไต่สวน 1 ใบจากคนทางซ้าย ใครได้การ์ดแม่มดกลายเป็นแม่มด</p>
     <h3>ชนะ</h3><ul><li><b>ชาวเมือง</b>: การ์ดแม่มดทุกใบถูกเปิด</li><li><b>แม่มด</b>: ผู้เล่นที่ยังมีชีวิตเหลือแต่แม่มด</li></ul>
     <h3>จำนวนการ์ดไต่สวน</h3><p>${Object.entries(t).map(([n, [per, w]]) => `${n} คน: คนละ ${per} ใบ แม่มด ${w}`).join(' · ')}</p>
@@ -848,7 +851,7 @@ document.addEventListener('click', (e) => {
       else { S.sel = { ...newSel(pr), power: true }; render(); }
       break;
     case 'peek': answer({ action: 'power', target: sel.t1, index: Number(el.dataset.idx) }); break;
-    case 'curse': answer({ action: 'play', card: sel.card, target: sel.t1, blue: Number(el.dataset.id) }); break;
+    case 'curse': answer({ action: 'play', card: sel.card, target: sel.t1, blue: el.dataset.id === 'cat' ? 'cat' : Number(el.dataset.id) }); break;
     case 'idx': answer({ index: Number(el.dataset.idx) }); break;
     case 'vote': answer({ target: Number(el.dataset.seat) }); break;
     case 'confess': answer({ index: el.dataset.idx === 'none' ? null : Number(el.dataset.idx) }); break;

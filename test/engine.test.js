@@ -16,11 +16,12 @@ function invariants(g) {
     for (const c of p.hand) ids.push(c.id);
     for (const r of p.red) ids.push(r.card.id);
     for (const c of p.blue) ids.push(c.id);
+    for (const c of p.stocks) ids.push(c.id);
     for (const c of p.hand) assert.notStrictEqual(CARDS[c.type].color, 'black', 'black cards never stay in a hand');
     for (const r of p.red) assert.strictEqual(CARDS[r.card.type].color === 'red' || r.card.type === 'accusation', true);
     for (const c of p.blue) assert.strictEqual(CARDS[c.type].color, 'blue');
     if (!p.alive) {
-      assert.strictEqual(p.hand.length + p.red.length + p.blue.length, 0, 'the dead hold nothing');
+      assert.strictEqual(p.hand.length + p.red.length + p.blue.length + p.stocks.length, 0, 'the dead hold nothing');
       assert.ok(p.tryal.every((c) => c.revealed), 'the dead have every tryal card revealed');
     }
     if (p.tryal.some((c) => c.kind === 'w')) assert.ok(p.witch, 'holding a witch card makes you a witch');
@@ -40,7 +41,7 @@ function invariants(g) {
 test('tryal table matches the confirmed rules for 4–12 players', () => {
   assert.strictEqual(MIN_PLAYERS, 4);
   assert.strictEqual(MAX_PLAYERS, 12);
-  const expect = { 4: [5, 1], 5: [5, 1], 6: [5, 2], 7: [5, 2], 8: [4, 2], 9: [4, 2], 10: [4, 2], 11: [3, 2], 12: [3, 2] };
+  const expect = { 4: [5, 1], 5: [5, 1], 6: [5, 2], 7: [5, 2], 8: [4, 2], 9: [4, 2], 10: [3, 2], 11: [3, 2], 12: [3, 2] }; // ตารางในคู่มือ (ไม่ใช่แม่มด 18/23/27/32/29/33/27/30/33)
   assert.deepStrictEqual(TRYAL_TABLE, expect);
   for (let n = 4; n <= 12; n++) {
     const k = buildTryals(n);
@@ -52,12 +53,12 @@ test('tryal table matches the confirmed rules for 4–12 players', () => {
   assert.throws(() => new Game({ players: players(13) }));
 });
 
-test('setup: 3 cards each, night in the bottom quarter, conspiracy somewhere in the deck, unique characters', () => {
+test('setup: 3 cards each, night at the very bottom, conspiracy somewhere in the deck, unique characters', () => {
   for (let k = 0; k < 40; k++) {
     const g = new Game({ players: players(4 + (k % 9)), botDelay: 0 });
     for (const p of g.players) assert.strictEqual(p.hand.length, 3);
     const ni = g.deck.findIndex((c) => c.type === 'night');
-    assert.ok(ni >= 0 && ni <= Math.floor((g.deck.length - 1) / 4) + 1, `night near the bottom (index ${ni} of ${g.deck.length})`);
+    assert.strictEqual(ni, 0, 'night is the very bottom card');
     assert.ok(g.deck.some((c) => c.type === 'conspiracy'));
     assert.strictEqual(new Set(g.players.map((p) => p.char)).size, g.players.length);
     invariants(g);
@@ -186,11 +187,10 @@ test('a non-witch reveal discards the red cards; Giles needs 8; Sarah Good curse
   invariants(g);
 });
 
-test('matchmaker drags the partner down; Elizabeth draws when someone dies', async () => {
-  const g = scripted(6, (g) => {
-    setTryals(g, [['nw', 'nw', 'nw', 'nw', 'nw'], ['w', 'nw', 'nw', 'nw', 'nw'], ['nw', 'nw', 'nw', 'nw', 'nw'], ['w', 'nw', 'nw', 'nw', 'nw'], ['c', 'nw', 'nw', 'nw', 'nw'], ['nw', 'nw', 'nw', 'nw', 'nw']]);
-    g.players[5].char = 'eproctor';
-  }, (p, req) => (req.type === 'reveal' ? { index: 0 } : null));
+test('matchmaker only chains a night kill; Elizabeth draws when someone dies', async () => {
+  const lists = [['nw', 'nw', 'nw', 'nw', 'nw'], ['w', 'nw', 'nw', 'nw', 'nw'], ['nw', 'nw', 'nw', 'nw', 'nw'], ['w', 'nw', 'nw', 'nw', 'nw'], ['c', 'nw', 'nw', 'nw', 'nw'], ['nw', 'nw', 'nw', 'nw', 'nw']];
+  // 1) แม่มดที่ถือแม่สื่อถูกเปิดโปงกลางวัน → คู่ของแม่สื่อไม่ตาย
+  const g = scripted(6, (g) => { setTryals(g, lists); g.players[5].char = 'eproctor'; }, (p, req) => (req.type === 'reveal' ? { index: 0 } : null));
   g.syncWitches();
   const [a, w1, b] = g.players;
   giveBlue(g, w1, 'matchmaker');
@@ -198,9 +198,23 @@ test('matchmaker drags the partner down; Elizabeth draws when someone dies', asy
   const wi = give(g, a, 'witness');
   const before = g.players[5].hand.length;
   await g.playCard(a, { action: 'play', card: wi, target: w1 });
-  assert.ok(!w1.alive && !b.alive, 'both matchmaker holders die');
-  assert.strictEqual(g.players[5].hand.length, before + 2, 'Elizabeth draws one card per death');
+  assert.ok(!w1.alive && b.alive, 'a daytime death does not trigger the matchmaker');
+  assert.strictEqual(g.players[5].hand.length, before + 1, 'Elizabeth draws one card for the death');
   invariants(g);
+  // 2) ผู้ถือแม่สื่อถูกฆ่าในยามราตรี → อีกคนตายด้วย แม้จะสารภาพ
+  const h = scripted(6, (g) => setTryals(g, lists), (p, req) => {
+    if (req.type === 'witchVote') return { target: 0 };
+    if (req.type === 'protect') return { target: 5 };
+    if (req.type === 'confess') return { index: p.seat === 2 ? 1 : null };
+    return null;
+  });
+  h.syncWitches();
+  giveBlue(h, h.players[0], 'matchmaker');
+  giveBlue(h, h.players[2], 'matchmaker');
+  h.discard.push(take(h, 'night'));
+  await h.night();
+  assert.ok(!h.players[0].alive && !h.players[2].alive, 'both matchmaker holders die at night even though the partner confessed');
+  invariants(h);
 });
 
 test('night: witches kill the victim unless protected, confessed or in asylum; night goes back under the deck', async () => {
@@ -216,16 +230,20 @@ test('night: witches kill the victim unless protected, confessed or in asylum; n
     if (opts.asylum) giveBlue(g, g.players[0], 'asylum');
     const night = g.deck.splice(g.deck.findIndex((c) => c.type === 'night'), 1)[0];
     g.discard.push(night);
-    const deckTop = g.deck[g.deck.length - 1];
+    g.discard.push(...g.deck.splice(0)); // ราตรีเกิดเมื่อกองจั่วหมด
+    const cardsBefore = g.deck.length + g.discard.length;
     await g.night();
     assert.strictEqual(g.discard.length, 0, 'discard shuffled back');
-    assert.strictEqual(g.deck[g.deck.length - 1], deckTop, 'the draw pile top is unchanged (night goes underneath)');
-    assert.ok(g.deck.indexOf(night) < g.deck.length - 1);
+    const held = g.players.reduce((n, p) => n + p.hand.length + p.red.length + p.blue.length + p.stocks.length, 0);
+    assert.strictEqual(g.deck.length, DECK_SIZE - held, 'deck + discard were shuffled together into one pile');
+    assert.ok(cardsBefore > 0);
+    assert.strictEqual(g.deck[0], night, 'night is back at the very bottom');
     const types = g.asked.map((x) => x.type);
     assert.deepStrictEqual(types.slice(0, 2), ['witchVote', 'protect'], 'witches first, then the constable');
     assert.strictEqual(g.asked.find((x) => x.type === 'protect').seat, 2);
     assert.ok(!g.asked.find((x) => x.type === 'protect').req.options.includes(2), 'constable cannot protect themselves');
-    assert.strictEqual(types.filter((t) => t === 'confess').length, 5, 'everyone alive may confess');
+    assert.strictEqual(types.filter((t) => t === 'confess').length, 5, 'any living player may confess');
+    assert.strictEqual(g.gavelSeat, opts.protect, 'the gavel is visible to everyone');
     invariants(g);
     return g.players[0].alive;
   };
@@ -339,7 +357,7 @@ test('answer validation: invalid answers are rejected and the prompt stays open'
   e = await waitPrompt(g, 'p0', 'turn');
   assert.ok(e.req.played);
   assert.strictEqual(g.submit('p0', e.id, { action: 'draw' }), 'การเลือกไม่ถูกต้อง', 'cannot draw after playing');
-  assert.ok(g.players[1].stocked);
+  assert.strictEqual(g.players[1].stocks.length, 1, 'stocks stay in front of the target until they are skipped');
   assert.strictEqual(g.submit('p0', e.id, { action: 'end' }), null);
   } finally {
     g.abort();

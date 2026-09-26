@@ -61,7 +61,7 @@ class Game {
     this.players = o.players.map((p, i) => ({
       pid: p.pid, name: p.name, isBot: !!p.isBot, connected: true, seat: i,
       char: chars[i], alive: true, witch: false, tryal: [], hand: [], red: [], blue: [],
-      stocked: false, used: false, notes: [], mind: {},
+      stocks: [], used: false, notes: [], mind: {},
     }));
     // การ์ดไต่สวน
     const kinds = shuffle(buildTryals(n), this.rnd);
@@ -78,9 +78,10 @@ class Game {
     this.deck = shuffle(all.filter((c) => c !== night && c !== consp), this.rnd);
     for (const p of this.players) p.hand = this.deck.splice(-3, 3);
     this.deck.splice(Math.floor(this.rnd() * (this.deck.length + 1)), 0, consp);
-    this.deck.splice(Math.floor(this.rnd() * (Math.floor(this.deck.length / 4) + 1)), 0, night);
+    this.deck.unshift(night); // ราตรีอยู่ใบล่างสุดเสมอ (ท้ายอาร์เรย์ = บนสุด)
     this.discard = [];
     this.queue = []; // การ์ดดำที่จั่วได้ระหว่างเหตุการณ์อื่น รอเกิดผลเมื่อปลอดภัย
+    this.owed = []; // การ์ดที่ยังจั่วไม่ครบเพราะเจอราตรีกลางคัน
     this.catSeat = null;
     this.ballot = null; // การลงคะแนนของแม่มด (เห็นเฉพาะแม่มด)
     this.pending = new Map();
@@ -92,7 +93,9 @@ class Game {
     this.turnNo = 0;
     this.nightNo = 0;
     this.phase = 'setup';
-    this.firstSeat = o.firstSeat ?? Math.floor(this.rnd() * n);
+    this.fixedFirst = o.firstSeat; // ปกติผู้ถือแมวดำเริ่มก่อน (กำหนดตายตัวได้เพื่อการทดสอบ)
+    this.firstSeat = o.firstSeat ?? 0;
+    this.gavelSeat = null; // ค้อนของผู้คุ้มกัน (ทุกคนเห็นหลังราตรี)
     this.activeSeat = null;
     this.result = null;
     this.aborted = false;
@@ -154,7 +157,8 @@ class Game {
     }
     return null;
   }
-  constable() { return this.players.find((p) => p.alive && p.tryal.some((c) => c.kind === 'c')) || null; }
+  /** ผู้คุ้มกัน = ผู้ที่ถือการ์ดผู้คุ้มกันที่ยังคว่ำอยู่ (ถ้าการ์ดถูกเปิด บทบาทนี้หายไปจากเกม) */
+  constable() { return this.players.find((p) => p.alive && p.tryal.some((c) => c.kind === 'c' && !c.revealed)) || null; }
   /** ใครเคยถือการ์ดแม่มด = แม่มดตลอดเกม */
   syncWitches() { for (const p of this.players) if (p.tryal.some((c) => c.kind === 'w')) p.witch = true; }
 
@@ -170,6 +174,7 @@ class Game {
   /** จั่วการ์ด n ใบ การ์ดดำเข้าคิวรอเกิดผล คืน true ถ้าจั่วได้ "ราตรี" (หยุดจั่วทันที) */
   draw(p, n, reason = '') {
     let got = 0;
+    let guard = 0;
     for (let i = 0; i < n; i++) {
       const c = this.drawOne();
       if (!c) break;
@@ -177,7 +182,14 @@ class Game {
         this.discard.push(c);
         this.queue.push({ type: c.type, by: p.seat });
         this.feed(`${this.nm(p)} จั่วได้การ์ด「${CARDS[c.type].name}」!`, { from: p.seat, art: ['cards', c.type], ms: 2000, kind: 'black' });
-        if (c.type === 'night') break;
+        // การ์ดดำนับเป็น 1 ใบที่จั่ว; ถ้าเป็นราตรี จั่วใบที่เหลือหลังราตรีจบ
+        if (c.type === 'night') { if (i + 1 < n) this.owed.push({ seat: p.seat, n: n - i - 1, reason }); break; }
+        continue;
+      }
+      // เหลือผู้เล่น 2 คน: การ์ดน้ำเงินถูกวางแยกไว้ แล้วจั่วใบใหม่แทน
+      if (CARDS[c.type].color === 'blue' && this.alive().length <= 2 && guard++ < 60) {
+        this.discard.push(c);
+        i--;
         continue;
       }
       p.hand.push(c);
@@ -188,7 +200,13 @@ class Game {
   }
   /** ให้การ์ดดำที่ค้างอยู่เกิดผลตามลำดับ */
   async flush() {
-    while (this.queue.length) {
+    while (this.queue.length || this.owed.length) {
+      if (!this.queue.length) {
+        const o = this.owed.shift();
+        const p = this.players[o.seat];
+        if (p.alive) { this.draw(p, o.n, o.reason); await this.settle(); }
+        continue;
+      }
       const q = this.queue.shift();
       const by = this.players[q.by];
       if (q.type === 'night') await this.night();
@@ -301,6 +319,8 @@ class Game {
     const def = CARDS[card.type];
     const T = (s) => (Number.isInteger(s) && this.players[s] && this.players[s].alive ? this.players[s] : null);
     const t = T(a.target);
+    // กติกา: ห้ามเล่นการ์ดใส่ตัวเองเด็ดขาด (ทั้งเป้าหมายแรกและเป้าหมายที่สอง)
+    if (!t || t === p) return null;
     if (def.color === 'red') {
       if (!t || t === p || this.hasBlue(t, 'piety')) return null;
       const power = !!a.power;
@@ -313,19 +333,22 @@ class Game {
       case 'arson':
         return t && t !== p && t.char !== 'mcorey' ? { action: 'play', card, target: t } : null;
       case 'alibi':
-        return t ? { action: 'play', card, target: t } : null;
-      case 'asylum': case 'piety': case 'matchmaker':
-        return t && !this.hasBlue(t, card.type) ? { action: 'play', card, target: t } : null;
+        return { action: 'play', card, target: t };
+      case 'matchmaker':
+        return { action: 'play', card, target: t }; // แม่สื่อ 2 ใบที่คนเดียวกันจะถูกทิ้งทั้งคู่
+      case 'asylum': case 'piety':
+        return !this.hasBlue(t, card.type) ? { action: 'play', card, target: t } : null;
       case 'scapegoat': {
         const t2 = T(a.target2);
-        return t && t2 && t !== t2 ? { action: 'play', card, target: t, target2: t2 } : null;
+        return t2 && t2 !== p && t !== t2 ? { action: 'play', card, target: t, target2: t2 } : null;
       }
       case 'robbery': {
         const t2 = T(a.target2);
-        return t && t2 && t !== t2 && t.char !== 'mcorey' ? { action: 'play', card, target: t, target2: t2 } : null;
+        return t2 && t2 !== p && t !== t2 && t.char !== 'mcorey' ? { action: 'play', card, target: t, target2: t2 } : null;
       }
       case 'curse': {
-        if (!t || t.char === 'burroughs') return null;
+        if (t.char === 'burroughs') return null;
+        if (a.blue === 'cat') return this.catSeat === t.seat ? { action: 'play', card, target: t, blue: 'cat' } : null; // แมวดำนับเป็นการ์ดสีน้ำเงิน
         const b = t.blue.find((c) => c.id === a.blue);
         return b ? { action: 'play', card, target: t, blue: b } : null;
       }
@@ -421,7 +444,8 @@ class Game {
     this.log('🌅 รุ่งอรุณ: แม่มดลืมตาในความมืด มองเห็นกันและกัน แล้วเลือกผู้ถือแมวดำ…');
     const seat = await this.witchVote('cat');
     this.catSeat = seat;
-    this.feed(`🐈‍⬛ แม่มดมอบแมวดำให้ ${this.nm(this.players[seat])}`, { to: [seat], art: ['misc', 'cat'], kind: 'cat' });
+    if (this.fixedFirst === undefined) this.firstSeat = seat;
+    this.feed(`🐈‍⬛ แม่มดมอบแมวดำให้ ${this.nm(this.players[seat])} — ${this.nm(this.players[this.firstSeat])} เริ่มเล่นก่อน`, { to: [seat], art: ['misc', 'cat'], kind: 'cat' });
     await this.settle();
     this.phase = 'day';
     this.emit({ type: 'dawn', cat: seat });
@@ -430,9 +454,9 @@ class Game {
   async takeTurn(p) {
     this.activeSeat = p.seat;
     this.phase = 'day';
-    if (p.stocked) {
-      p.stocked = false;
-      this.feed(`⛓ ${this.nm(p)} ติดขื่อคา ต้องข้ามตานี้`, { to: [p.seat], art: ['cards', 'stocks'], ms: 1800 });
+    if (p.stocks.length) {
+      this.toDiscard([p.stocks.shift()]); // ข้ามตาแล้วค่อยทิ้งขื่อคา
+      this.feed(`⛓ ${this.nm(p)} ติดขื่อคา ต้องข้ามตานี้${p.stocks.length ? ` (เหลืออีก ${p.stocks.length})` : ''}`, { to: [p.seat], art: ['cards', 'stocks'], ms: 1800 });
       await this.settle();
       return;
     }
@@ -442,7 +466,7 @@ class Game {
     while (p.alive) {
       const a = await this.ask(p, { type: 'turn', played, deadline });
       if (a.action === 'end') break;
-      if (a.action === 'draw') { this.draw(p, 2); await this.settle(); break; }
+      if (a.action === 'draw') { this.draw(p, 2); await this.settle(); await this.flush(); break; }
       if (a.action === 'draw3') {
         this.draw(p, 3, ' (พลังแมรี)');
         if (p.hand.length) {
@@ -491,7 +515,8 @@ class Game {
         break;
       }
       case 'stocks':
-        t.stocked = true;
+        this.discard.pop(); // ขื่อคาไม่ถูกทิ้งทันที แต่ค้างอยู่หน้าเป้าหมายจนกว่าจะถูกข้ามตา
+        t.stocks.push(card);
         this.feed(`${who} ใส่「ขื่อคา」${this.nm(t)} — ต้องข้ามตาถัดไป`, { from: p.seat, to: [t.seat], card: card.type });
         this.emit({ type: 'hostile', from: p.seat, to: t.seat, card: card.type });
         break;
@@ -517,19 +542,27 @@ class Game {
         const blues = moveBlue ? t.blue.length : 0;
         other.red.push(...t.red);
         t.red = [];
+        const catMoves = moveBlue && this.catSeat === t.seat;
+        if (catMoves) this.catSeat = other.seat;
         if (moveBlue) {
-          for (const b of t.blue) {
-            if (this.hasBlue(other, b.type)) this.toDiscard([b]);
-            else other.blue.push(b);
-          }
+          const moving = t.blue;
           t.blue = [];
+          for (const b of moving) this.placeBlue(other, b);
         }
-        this.feed(`${who} ใช้「แพะรับบาป」ย้ายการ์ดแดง ${reds} ใบ${blues ? ` และน้ำเงิน ${blues} ใบ` : ''} จาก ${this.nm(t)} ไปหา ${this.nm(other)} (${this.total(other)}/${this.threshold(other)})`, { from: p.seat, to: [t.seat, other.seat], card: card.type });
+        other.stocks.push(...t.stocks);
+        t.stocks = [];
+        this.feed(`${who} ใช้「แพะรับบาป」ย้ายการ์ดแดง ${reds} ใบ${blues ? ` และน้ำเงิน ${blues} ใบ` : ''}${catMoves ? ' และแมวดำ' : ''} จาก ${this.nm(t)} ไปหา ${this.nm(other)} (${this.total(other)}/${this.threshold(other)})`, { from: p.seat, to: [t.seat, other.seat], card: card.type });
         this.emit({ type: 'accuse', from: p.seat, to: other.seat, card: card.type, total: this.total(other) });
         await this.checkAccuse(other, p);
         return;
       }
       case 'curse': {
+        if (a.blue === 'cat') {
+          this.catSeat = null;
+          this.feed(`${who} ใช้「คำสาป」ไล่แมวดำหน้า ${this.nm(t)} ออกจากเกม`, { from: p.seat, to: [t.seat], card: card.type });
+          this.emit({ type: 'hostile', from: p.seat, to: t.seat, card: card.type });
+          break;
+        }
         t.blue = t.blue.filter((c) => c !== a.blue);
         this.toDiscard([a.blue]);
         this.feed(`${who} ใช้「คำสาป」ทำลาย「${CARDS[a.blue.type].name}」หน้า ${this.nm(t)}`, { from: p.seat, to: [t.seat], card: card.type });
@@ -537,13 +570,24 @@ class Game {
         break;
       }
       case 'asylum': case 'piety': case 'matchmaker':
-        t.blue.push(card);
+        this.placeBlue(t, card);
         this.feed(`${who} วาง「${def.name}」หน้า ${t === p ? 'ตัวเอง' : this.nm(t)}`, { from: p.seat, to: [t.seat], card: card.type });
         this.update();
         return;
       default: break;
     }
     this.update();
+  }
+
+  /** วางการ์ดน้ำเงินหน้าผู้เล่น: ซ้ำชนิดเดิมถูกทิ้ง และแม่สื่อ 2 ใบที่คนเดียวกันถูกทิ้งทั้งคู่ */
+  placeBlue(t, b) {
+    const same = t.blue.find((x) => x.type === b.type);
+    if (!same) { t.blue.push(b); return; }
+    if (b.type === 'matchmaker') {
+      t.blue = t.blue.filter((x) => x !== same);
+      this.toDiscard([same, b]);
+      this.log(`💔 แม่สื่อ 2 ใบอยู่ที่ ${this.nm(t)} คนเดียว — ทิ้งทั้งคู่`);
+    } else this.toDiscard([b]);
   }
 
   removeAccusations(t, max) {
@@ -607,12 +651,12 @@ class Game {
     return c.kind;
   }
 
-  /** ผู้เล่นตาย: เปิดการ์ดทั้งหมด ทิ้งมือและการ์ดหน้าตัว (แม่สื่อพาอีกคนตายตาม) */
+  /** ผู้เล่นตาย: เปิดการ์ดทั้งหมด ทิ้งมือและการ์ดหน้าตัว */
   kill(p, why) {
     if (!p.alive) return;
-    const matched = this.hasBlue(p, 'matchmaker');
     p.alive = false;
-    p.stocked = false;
+    this.toDiscard(p.stocks);
+    p.stocks = [];
     for (const c of p.tryal) c.revealed = true;
     this.toDiscard(p.hand);
     this.toDiscard(p.red.map((r) => r.card));
@@ -622,10 +666,11 @@ class Game {
     this.feed(`💀 ${this.nm(p)} ตาย (${why}) — เป็น${role}`, { to: [p.seat], art: ['chars', p.char], ms: 3500, kind: 'death' });
     this.emit({ type: 'death', seat: p.seat, witch: p.witch });
     for (const q of this.alive()) if (q.char === 'eproctor') this.draw(q, 1, ' (พลังเอลิซาเบธ)');
-    if (matched) {
-      for (const q of this.alive()) {
-        if (this.hasBlue(q, 'matchmaker')) this.kill(q, `แม่สื่อผูกชะตาไว้กับ ${this.nm(p)}`);
-      }
+    const alive = this.alive();
+    if (alive.length === 2 && (alive.some((q) => q.blue.length) || this.catSeat !== null)) {
+      for (const q of alive) { this.toDiscard(q.blue); q.blue = []; }
+      this.catSeat = null;
+      this.log('เหลือผู้เล่น 2 คน — การ์ดสีน้ำเงินทั้งหมด (รวมแมวดำ) ถูกทิ้ง');
     }
   }
 
@@ -688,13 +733,20 @@ class Game {
     const victimSeat = await this.witchVote('kill');
     const cons = this.constable();
     let protect = null;
+    this.gavelSeat = null;
     if (cons) {
       const options = this.alive().filter((q) => q !== cons).map((q) => q.seat);
       if (options.length) {
         const a = await this.ask(cons, { type: 'protect', options });
         protect = a.target;
-        this.note(cons, `🛡 คืนนี้คุณปกป้อง ${this.nm(this.players[protect])}`);
+        this.note(cons, `🛡 คืนนี้คุณวางค้อนปกป้อง ${this.nm(this.players[protect])}`);
       }
+    }
+    // ทุกคนลืมตา: เห็นค้อนหน้าผู้ที่ถูกปกป้อง แล้วใครจะสารภาพก็ได้
+    if (protect !== null) {
+      this.gavelSeat = protect;
+      this.feed(`🔨 ผู้คุ้มกันวางค้อนไว้หน้า ${this.nm(this.players[protect])} — คืนนี้รอดแน่นอน`, { to: [protect], art: ['tryal', 'c'], ms: 2500, kind: 'gavel' });
+      await this.settle();
     }
     // สารภาพ: ทุกคนเลือกพร้อมกัน
     this.phase = 'confess';
@@ -724,14 +776,20 @@ class Game {
       this.emit({ type: 'morning', victim: null });
     } else {
       this.feed(`☀ รุ่งเช้า… พบ ${this.nm(v)} ถูกสังหารในยามราตรี`, { to: [v.seat], art: ['cards', 'night'], ms: 2500, kind: 'morning' });
+      const matched = this.hasBlue(v, 'matchmaker');
       this.kill(v, 'ถูกแม่มดสังหาร');
+      // แม่สื่อ: ถ้าผู้ถือแม่สื่อถูกฆ่าในยามราตรี ผู้ถือแม่สื่ออีกคนตายด้วย (แม้จะสารภาพหรือได้ค้อน)
+      if (matched) for (const q of this.alive()) if (this.hasBlue(q, 'matchmaker')) this.kill(q, `แม่สื่อผูกชะตาไว้กับ ${this.nm(v)}`);
       this.emit({ type: 'morning', victim: v.seat });
       this.checkWin();
     }
     await this.settle();
-    // ราตรีกับกองทิ้งสับรวมกัน วางใต้กองจั่ว
-    this.deck = shuffle(this.discard, this.rnd).concat(this.deck);
-    this.discard = [];
+    // กองจั่วที่เหลือกับกองทิ้งสับรวมกันเป็นกองใหม่ แล้ววางราตรีไว้ใบล่างสุดอีกครั้ง
+    // (ถ้าทิทูบาย้ายราตรีขึ้นมา กองจั่วยังเหลือ: วางราตรีไว้ล่างสุดของกองที่เหลือ แล้วสับกองทิ้งเมื่อกองหมดเท่านั้น)
+    const nightCard = this.discard.find((c) => c.type === 'night');
+    this.discard = this.discard.filter((c) => c !== nightCard);
+    if (!this.deck.length) { this.deck = shuffle(this.discard, this.rnd); this.discard = []; }
+    if (nightCard) this.deck.unshift(nightCard);
     this.phase = 'day';
     this.update();
   }
@@ -856,6 +914,7 @@ class Game {
       activeSeat: this.activeSeat,
       mySeat: me ? me.seat : null,
       catSeat: this.catSeat,
+      gavelSeat: this.gavelSeat,
       deckCount: this.deck.length,
       discardCount: this.discard.length,
       discardTop: cardOut(this.discard[this.discard.length - 1]),
@@ -866,7 +925,7 @@ class Game {
         red: p.red.map((r) => ({ id: r.card.id, type: r.card.type, value: r.value })),
         total: this.total(p), threshold: this.threshold(p),
         blue: p.blue.map(cardOut),
-        stocked: p.stocked, used: p.used,
+        stocked: p.stocks.length, used: p.used,
         witch: over || (iAmWitch && p.witch) || (p === me && p.witch) ? p.witch : null,
       })),
       hand: me ? me.hand.map(cardOut) : [],

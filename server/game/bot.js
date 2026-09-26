@@ -131,24 +131,25 @@ function turn(g, p, req) {
     if (p.char === 'tituba' && g.deck.length >= 3 && rnd(g) < 0.3) return { action: 'power' };
   }
 
-  // ป้องกันตัวเองก่อน
-  if (myTotal >= myTh - 3) {
-    const alibi = find('alibi');
-    if (alibi && p.red.some((r) => r.card.type === 'accusation')) return { action: 'play', card: alibi.id, target: p.seat };
-    const goat = find('scapegoat');
-    const t = goat && mainTarget(g, p);
-    if (t) return { action: 'play', card: goat.id, target: p.seat, target2: t.seat };
-    const piety = find('piety');
-    if (piety && !g.hasBlue(p, 'piety')) return { action: 'play', card: piety.id, target: p.seat };
-  }
-  // แม่มดช่วยพวกพ้อง / ชาวเมืองช่วยคนที่ไว้ใจ
+  // กติกา: ห้ามเล่นการ์ดใส่ตัวเอง — บอทช่วยพวกพ้อง/คนที่ไว้ใจแทน
+  const friendOk = (q) => q !== p && (p.witch ? q.witch : suspicion(g, p, q) < 0.8);
   const alibi = find('alibi');
   if (alibi) {
-    const friend = trusted(g, p, (q) => q !== p && q.red.some((r) => r.card.type === 'accusation') && g.total(q) >= g.threshold(q) - 2);
-    if (friend && (p.witch ? friend.witch : suspicion(g, p, friend) < 0.8)) return { action: 'play', card: alibi.id, target: friend.seat };
+    const friend = trusted(g, p, (q) => q !== p && q.red.some((r) => r.card.type === 'accusation') && g.total(q) >= g.threshold(q) - 3);
+    if (friend && friendOk(friend)) return { action: 'play', card: alibi.id, target: friend.seat };
   }
-  const asylum = find('asylum');
-  if (asylum && !g.hasBlue(p, 'asylum')) return { action: 'play', card: asylum.id, target: p.seat };
+  const goat = find('scapegoat');
+  if (goat) {
+    // ย้ายการ์ดแดงจากพวกเดียวกันที่ใกล้โดนไต่สวน ไปหาคนที่น่าสงสัยที่สุด
+    const from = trusted(g, p, (q) => q !== p && g.total(q) >= g.threshold(q) - 3);
+    const to = from && mainTarget(g, p, (q) => q !== from);
+    if (from && to && friendOk(from)) return { action: 'play', card: goat.id, target: from.seat, target2: to.seat };
+  }
+  for (const type of ['asylum', 'piety']) {
+    const c = find(type);
+    const friend = c && trusted(g, p, (q) => q !== p && !g.hasBlue(q, type) && (type === 'asylum' || g.total(q) >= 2));
+    if (friend && friendOk(friend)) return { action: 'play', card: c.id, target: friend.seat };
+  }
 
   // การ์ดแดง
   const reds = hand.filter((c) => CARDS[c.type].color === 'red').sort((a, b) => CARDS[b.type].value - CARDS[a.type].value);
@@ -165,7 +166,7 @@ function turn(g, p, req) {
   }
   const stocks = find('stocks');
   if (stocks) {
-    const t = mainTarget(g, p, (q) => q.char !== 'osborne' && !q.stocked);
+    const t = mainTarget(g, p, (q) => q.char !== 'osborne' && !q.stocks.length);
     if (t && (p.witch || suspicion(g, p, t) > 0.8)) return { action: 'play', card: stocks.id, target: t.seat };
   }
   const arson = find('arson');
@@ -176,15 +177,17 @@ function turn(g, p, req) {
   const rob = find('robbery');
   if (rob) {
     const t = argmax(others(g, p).filter((q) => q.char !== 'mcorey' && q.hand.length >= 3 && (!p.witch || !q.witch)), (q) => q.hand.length);
-    if (t) return { action: 'play', card: rob.id, target: t.seat, target2: p.seat };
+    const to = t && trusted(g, p, (q) => q !== p && q !== t);
+    if (t && to) return { action: 'play', card: rob.id, target: t.seat, target2: to.seat };
   }
   const curse = find('curse');
   if (curse) {
     const t = mainTarget(g, p, (q) => q.char !== 'burroughs' && q.blue.some((b) => b.type !== 'matchmaker'));
     if (t) return { action: 'play', card: curse.id, target: t.seat, blue: t.blue.find((b) => b.type !== 'matchmaker').id };
+    // แม่มดที่ถือแมวดำเองอยากไล่แมวทิ้ง (ห้ามใช้กับตัวเอง จึงทำได้เฉพาะเมื่อแมวอยู่กับพวกพ้อง)
+    const cat = g.catSeat !== null && g.players[g.catSeat];
+    if (p.witch && cat && cat !== p && cat.alive && cat.witch && cat.char !== 'burroughs') return { action: 'play', card: curse.id, target: cat.seat, blue: 'cat' };
   }
-  const piety = find('piety');
-  if (piety && !g.hasBlue(p, 'piety') && myTotal >= 2) return { action: 'play', card: piety.id, target: p.seat };
   const mm = find('matchmaker');
   if (mm) {
     const t = mainTarget(g, p, (q) => !g.hasBlue(q, 'matchmaker'));

@@ -33,9 +33,26 @@ async function boot(opts) {
   };
   return ctx;
 }
+/** ให้ไคลเอนต์ตอบทุกคำสั่งอัตโนมัติ (เช่น อลิซที่อาจได้เป็นแม่มดและต้องโหวตตอนรุ่งอรุณ) */
+function autoAnswer(s) {
+  let last = 0;
+  s.on('state', (st) => {
+    const pr = st.game && st.game.prompt;
+    if (!pr || pr.id === last) return;
+    last = pr.id;
+    const data = {
+      turn: { action: pr.played ? 'end' : 'draw' }, witchVote: { target: pr.options && pr.options[0] }, protect: { target: pr.options && pr.options[0] },
+      confess: { index: null }, reveal: { index: pr.indexes && pr.indexes[0] }, conspTake: { index: pr.indexes && pr.indexes[0] },
+      bribe: { use: false }, discard1: { card: st.game.hand[0] && st.game.hand[0].id }, tituba: { order: (pr.cards || []).map((c) => c.id) },
+    }[pr.type];
+    s.emit('answer', { promptId: pr.id, data });
+  });
+}
+
 /** สร้างห้อง: อลิซ (หัวห้อง) + บ๊อบ + บอท 2 ตัว แล้วเริ่มเกม */
 async function setupGame(ctx) {
   const a = ctx.client();
+  autoAnswer(a);
   a.emit('hello', { token: 'token-alice-123' });
   await waitFor(a, (st) => st.room === null);
   a.emit('create', { name: 'อลิซ' });
