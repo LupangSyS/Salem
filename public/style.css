@@ -202,3 +202,41 @@ svg.arrows { position: absolute; inset: 0; width: 100%; height: 100%; pointer-ev
 /* ชื่อตัวละครยาว: ขึ้นได้ 2 บรรทัด */
 .card.cf.char .cf-name { white-space: normal; line-height: 1.15; height: 2.35em; display: flex; align-items: center; justify-content: center; font-size: 13px; }
 .card.cf.char.mini .cf-name { font-size: 9.5px; }
+
+/* ── แถบ "เกิดอะไรขึ้น" ── */
+#r-feed { min-width: 0; }
+.act-strip { position: relative; display: flex; align-items: center; gap: 10px; background: #120e16; border: 2px solid var(--line); border-radius: 12px; padding: 7px 10px 10px; box-shadow: 0 4px 14px #000a; min-height: 70px; overflow: hidden; }
+.act-strip .pics { display: flex; align-items: center; gap: 8px; flex: none; }
+.act-strip .av { width: 46px; aspect-ratio: 66 / 54; background: #0004 center / cover; image-rendering: pixelated; border-radius: 5px; border: 1px solid #000; }
+.act-strip .cardimg { width: 46px; aspect-ratio: 66 / 54; background: center / cover; image-rendering: pixelated; border-radius: 5px; border: 2px solid var(--gold); }
+.act-strip .ar { color: #ff5a3a; font-weight: 800; font-size: 18px; }
+.act-strip .tx { font-size: 13.5px; line-height: 1.4; min-width: 0; overflow-wrap: anywhere; }
+.act-strip .tag { font-size: 11px; color: var(--muted); }
+.act-strip .bar { position: absolute; left: 10px; right: 10px; bottom: 3px; height: 3px; border-radius: 2px; background: currentColor; transform-origin: left; animation: drain linear forwards; }
+@keyframes drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+.act-strip.red { border-color: #ff5a3a; color: #ff7a5a; } .act-strip.red .cardimg { border-color: var(--red); }
+.act-strip.green { border-color: #6ac05a; color: #8ae07a; } .act-strip.green .cardimg { border-color: var(--green); }
+.act-strip.blue { border-color: #5a8ad8; color: #8ab8ff; } .act-strip.blue .cardimg { border-color: var(--blue); }
+.act-strip.power { border-color: #a070d0; color: #c090f0; }
+.act-strip.night { border-color: #7a6ab8; color: #b0a0f0; }
+.act-strip.reveal { border-color: var(--gold); color: var(--gold); }
+.act-strip.witch { border-color: #ff5aa0; color: #ff80c0; }
+.act-strip.death { border-color: #c02020; color: #ff6a6a; background: #200a0c; }
+.act-strip.plain { color: var(--muted); }
+.act-strip .tx, .act-strip .tx b { color: var(--ink); }
+@media (max-width: 600px) {
+  .act-strip { flex-direction: column; gap: 4px; text-align: center; }
+  .act-strip .tx { font-size: 13px; }
+}
+.seat.actor { box-shadow: 0 0 0 3px #ffd070, 0 0 18px #ffd070; }
+.seat.hit { border-color: #ff5a3a; }
+.seat.shake { animation: shake .6s ease; }
+.seat.pulse { animation: pulseGold .9s ease; }
+.seat.flash { animation: flashRed .9s ease; }
+@keyframes shake { 0%, 100% { transform: translate(-50%, -50%); } 20% { transform: translate(calc(-50% - 6px), -50%) rotate(-3deg); } 40% { transform: translate(calc(-50% + 6px), -50%) rotate(3deg); } 60% { transform: translate(calc(-50% - 4px), -50%); } 80% { transform: translate(calc(-50% + 3px), -50%); } }
+@keyframes pulseGold { 0%, 100% { box-shadow: none; } 40% { box-shadow: 0 0 0 6px #e8c070, 0 0 26px #e8c070; transform: translate(-50%, -50%) scale(1.08); } }
+@keyframes flashRed { 0%, 100% { filter: none; } 30% { filter: brightness(1.8) sepia(1) hue-rotate(-40deg) saturate(4); transform: translate(-50%, -50%) scale(1.06); } }
+.fly { position: fixed; z-index: 40; width: 52px; aspect-ratio: 66 / 54; background: #2a1a13 center / cover; image-rendering: pixelated; border: 2px solid var(--gold); border-radius: 6px; box-shadow: 0 6px 16px #000c; pointer-events: none; transition: transform .75s cubic-bezier(.3, .7, .4, 1), opacity .3s; }
+.fly.red { border-color: #ff5a3a; } .fly.green { border-color: #6ac05a; } .fly.blue { border-color: #5a8ad8; } .fly.power { border-color: #a070d0; }
+.fly.land { opacity: 0; }
+@media (prefers-reduced-motion: reduce) { .fly { transition: none; } .seat.shake, .seat.pulse, .seat.flash { animation: none; } }

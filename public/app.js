@@ -45,7 +45,10 @@ socket.on('state', (st) => {
   }
   const pr = curPrompt();
   if (!pr || !S.sel || S.sel.pid !== pr.id) S.sel = pr ? newSel(pr) : null;
+  feedIngest();
+  const next = feedPump();
   render();
+  if (next) animateEvent(F.cur);
 });
 
 function send(ev, data) { socket.emit(ev, data); }
@@ -189,12 +192,13 @@ function render() {
   } else {
     if (!$('#g-root')) {
       app.innerHTML = `<div id="g-root"><div class="top" id="r-top"></div><div class="game"><div class="main">
-        <div class="tablewrap" id="tw"></div><div id="r-prompt"></div><div id="r-hand"></div></div>
+        <div id="r-feed"></div><div class="tablewrap" id="tw"></div><div id="r-prompt"></div><div id="r-hand"></div></div>
         <div class="side" id="r-side"></div></div></div>`;
       app.dataset.k = 'game';
     }
     const parts = gameParts();
     setHTML($('#r-top'), 'top', parts.top);
+    setHTML($('#r-feed'), 'feed', feedHTML());
     const tw = $('#tw');
     tw.className = `tablewrap ${parts.night ? 'night' : ''}`;
     tw.style.setProperty('--sw', `${parts.sw}px`);
@@ -300,7 +304,7 @@ function gameParts() {
       <div class="phase-tag">${esc(g.phaseName)}${g.nightNo ? ` · ราตรีผ่านไป ${g.nightNo}` : ''}</div>
       ${g.players.map(seatHTML).join('')}
       <svg class="arrows" id="arrows"></svg>
-      <!--${JSON.stringify(arrowEvents().map((e) => e.id))}-->`,
+      <!--${F.cur ? F.cur.id : 0}-->`,
     prompt: promptHTML(),
     hand: handHTML(),
     side: chatHTML(true),
@@ -389,17 +393,19 @@ function layoutTable() {
 }
 
 function arrowEvents() {
-  const g = G();
-  const ev = g.events || [];
-  const cur = ev.filter((e) => e.turn === g.turnNo);
-  if (cur.length) return cur.slice(-3);
-  const last = ev[ev.length - 1];
-  return last && last.turn >= g.turnNo - 1 ? [last] : [];
+  const e = F.cur;
+  return e && e.from !== null && e.to.length && e.card ? [e] : [];
 }
 function drawArrows(tw, pos, sh) {
   const svg = $('#arrows');
   tw.querySelectorAll('.arrowtag').forEach((t) => t.remove());
   tw.querySelectorAll('.seat.hit').forEach((t) => t.classList.remove('hit'));
+  if (F.cur) {
+    for (const to of F.cur.to) { const el = tw.querySelector(`.seat[data-seat="${to}"]`); if (el) el.classList.add('hit'); }
+    const a = F.cur.from !== null && tw.querySelector(`.seat[data-seat="${F.cur.from}"]`);
+    if (a) a.classList.add('actor');
+  }
+  tw.querySelectorAll('.seat.actor').forEach((t) => { if (!F.cur || Number(t.dataset.seat) !== F.cur.from) t.classList.remove('actor'); });
   let paths = '<defs><marker id="ah" markerWidth="8" markerHeight="8" refX="5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#ff5a3a"/></marker><marker id="ahg" markerWidth="8" markerHeight="8" refX="5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#7ae07a"/></marker></defs>';
   for (const e of arrowEvents()) {
     const d = M().cards[e.card];
@@ -628,7 +634,7 @@ function modalHTML() {
   if (!S.meta || !S.st) return '';
   const g = G();
   let body = '';
-  if (g && g.result && !S.hideResult && S.st.room.status !== 'lobby') body = resultHTML();
+  if (g && g.result && !S.hideResult && S.st.room.status !== 'lobby' && !feedBusy()) body = resultHTML();
   else if (S.modal) {
     const { kind, id } = S.modal;
     if (kind === 'rules') body = rulesHTML();
@@ -648,6 +654,105 @@ function modalHTML() {
   }
   return body ? `<div class="modal-bg" data-act="bg"><div class="modal">${body}</div></div>` : '';
 }
+
+// ════════════════════ แถบ "เกิดอะไรขึ้น" + แอนิเมชัน ════════════════════
+// เหตุการณ์จากเซิร์ฟเวอร์ถูกแสดงทีละอย่างตามเวลาที่กำหนด (ms) — ถ้าค้างหลายอย่าง (เช่นเพิ่งกลับเข้าเกม) จะเร่ง/ข้ามของเก่า
+const F = { room: null, seen: 0, queue: [], cur: null, until: 0, dur: 0 };
+function feedIngest() {
+  const g = G();
+  if (!g) return;
+  const ev = g.events || [];
+  const last = ev[ev.length - 1];
+  if (F.room !== S.st.room.code || (last && last.id < F.seen) || (!last && F.seen)) {
+    // ห้องใหม่ / เกมใหม่ / เพิ่งเปิดหน้า: แสดงเหตุการณ์ล่าสุดทันทีโดยไม่เล่นย้อนหลัง
+    Object.assign(F, { room: S.st.room.code, queue: [], cur: last || null, seen: last ? last.id : 0, until: 0, dur: 0 });
+    return;
+  }
+  for (const e of ev) if (e.id > F.seen) { F.queue.push(e); F.seen = e.id; }
+  if (F.queue.length > 6) F.queue = F.queue.slice(-3);
+}
+function feedPump() {
+  const t = Date.now();
+  if (!F.queue.length || t < F.until) return false;
+  const e = F.queue.shift();
+  const k = F.queue.length > 2 ? 0.45 : 1;
+  F.cur = e;
+  F.dur = Math.round(e.ms * k);
+  F.until = t + F.dur;
+  return true;
+}
+const feedBusy = () => F.queue.length > 0 || Date.now() < F.until;
+
+function feedArt(e) {
+  if (e.card && e.card !== 'power') return artUrl('cards', e.card);
+  if (e.art) return artUrl(e.art[0], e.art[1]);
+  if (e.card === 'power' && e.from !== null) return artUrl('chars', P(e.from).char);
+  return null;
+}
+function feedTone(e) {
+  if (e.kind === 'death') return 'death';
+  if (e.kind === 'reveal') return e.art && e.art[1] === 'w' ? 'witch' : 'reveal';
+  if (e.kind === 'night' || e.kind === 'black' || e.kind === 'cat') return 'night';
+  if (e.card === 'power') return 'power';
+  if (e.card) return M().cards[e.card].color;
+  return 'plain';
+}
+function feedHTML() {
+  const e = F.cur;
+  if (!e) return '<div class="act-strip plain"><div class="tx"><span class="tag">เกิดอะไรขึ้น</span><br>เกมกำลังเริ่ม…</div></div>';
+  const pic = (seat) => (seat === null || seat === undefined ? '' : `<div class="av" title="${esc(cname(seat))}" style="background-image:url('${esc(artUrl('chars', P(seat).char) || '')}')"></div>`);
+  const art = feedArt(e);
+  const pics = [
+    pic(e.from),
+    art && !(e.kind === 'death') ? `<div class="cardimg" style="background-image:url('${esc(art)}')"></div>` : '',
+    e.from !== null && e.to.length ? '<span class="ar">➜</span>' : '',
+    ...e.to.map(pic),
+  ].filter(Boolean).join('');
+  const busy = Date.now() < F.until;
+  return `<div class="act-strip ${feedTone(e)}" data-ev="${e.id}"><div class="pics">${pics}</div>
+    <div class="tx"><span class="tag">เกิดอะไรขึ้น${F.queue.length ? ` · อีก ${F.queue.length} เหตุการณ์` : ''}</span><br>${esc(e.text)}</div>
+    ${busy ? `<div class="bar" style="animation-duration:${F.dur}ms"></div>` : ''}</div>`;
+}
+
+/** การ์ดบินจากผู้เล่นไปหาเป้าหมาย แล้วเป้าหมายสั่น / การ์ดที่ถูกเปิดหรือคนตายจะกะพริบ */
+function animateEvent(e) {
+  if (!e || !G()) return;
+  const seatEl = (s) => document.querySelector(`#tw .seat[data-seat="${s}"]`);
+  const shake = (s, cls = 'shake') => {
+    const el = seatEl(s);
+    if (!el) return;
+    el.classList.remove(cls);
+    void el.offsetWidth;
+    el.classList.add(cls);
+    setTimeout(() => { const x = seatEl(s); if (x) x.classList.remove(cls); }, 900);
+  };
+  if (e.from !== null && e.to.length && e.card) {
+    const art = feedArt(e);
+    e.to.forEach((to, i) => {
+      const a = seatEl(e.from); const b = seatEl(to);
+      if (!a || !b || to === e.from) { shake(to); return; }
+      const ra = a.getBoundingClientRect(); const rb = b.getBoundingClientRect();
+      const fly = document.createElement('div');
+      fly.className = `fly ${feedTone(e)}`;
+      if (art) fly.style.backgroundImage = `url('${art}')`;
+      fly.style.left = `${ra.left + ra.width / 2 - 26}px`;
+      fly.style.top = `${ra.top + ra.height / 2 - 22}px`;
+      document.body.appendChild(fly);
+      setTimeout(() => {
+        fly.style.transform = `translate(${rb.left - ra.left + (rb.width - ra.width) / 2}px, ${rb.top - ra.top + (rb.height - ra.height) / 2}px) rotate(${i ? -8 : 8}deg) scale(1.15)`;
+      }, 30 + i * 180);
+      setTimeout(() => { fly.classList.add('land'); shake(to); }, 820 + i * 180);
+      setTimeout(() => fly.remove(), 1250 + i * 180);
+    });
+  } else if (e.to.length) {
+    e.to.forEach((to) => shake(to, e.kind === 'death' ? 'flash' : 'pulse'));
+  }
+}
+
+setInterval(() => {
+  const wasBusy = feedBusy();
+  if (feedPump()) { render(); animateEvent(F.cur); } else if (wasBusy !== feedBusy() || (F.cur && F.until && Date.now() >= F.until && $('.act-strip .bar'))) render();
+}, 150);
 
 // ════════════════════ timers ════════════════════
 function tick() {

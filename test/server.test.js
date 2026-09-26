@@ -50,7 +50,7 @@ async function setupGame(ctx) {
 }
 
 test('end-to-end: create room → join → chat → bots → start → disconnect → rejoin same seat and prompt', async () => {
-  const ctx = await boot({ botDelay: 0, talkDelay: 0, firstSeat: 1, timeouts: { turn: 20000, quick: 20000, disconnected: 20000 } });
+  const ctx = await boot({ botDelay: 0, talkDelay: 0, pace: 0, firstSeat: 1, timeouts: { turn: 20000, quick: 20000, disconnected: 20000 } });
   try {
     const { a, b, code, s1 } = await setupGame(ctx);
     assert.match(code, /^[A-Z2-9]{4}$/);
@@ -107,7 +107,7 @@ test('end-to-end: create room → join → chat → bots → start → disconnec
 });
 
 test('a disconnected player\'s pending prompt is answered by a bot after the grace period', async () => {
-  const ctx = await boot({ botDelay: 0, talkDelay: 0, firstSeat: 1, timeouts: { turn: 20000, quick: 20000, disconnected: 300 } });
+  const ctx = await boot({ botDelay: 0, talkDelay: 0, pace: 0, firstSeat: 1, timeouts: { turn: 20000, quick: 20000, disconnected: 300 } });
   try {
     const { a, b } = await setupGame(ctx);
     a.emit('addBot'); a.emit('addBot');
@@ -131,7 +131,7 @@ test('a disconnected player\'s pending prompt is answered by a bot after the gra
 });
 
 test('leaving mid-game hands the seat to a bot permanently; witch chat stays private', async () => {
-  const ctx = await boot({ botDelay: 0, talkDelay: 0, timeouts: { turn: 20000, quick: 20000, disconnected: 20000 } });
+  const ctx = await boot({ botDelay: 0, talkDelay: 0, pace: 0, timeouts: { turn: 20000, quick: 20000, disconnected: 20000 } });
   try {
     const { a, b } = await setupGame(ctx);
     a.emit('addBot'); a.emit('addBot');

@@ -51,7 +51,10 @@ class Game {
     this.rnd = o.rng || Math.random;
     this.onUpdate = o.onUpdate || (() => {});
     this.onEvent = o.onEvent || (() => {});
-    this.botDelay = o.botDelay ?? 900;
+    this.botDelay = o.botDelay ?? 2500;
+    this.pace = o.pace ?? 0; // ตัวคูณเวลาหยุดให้ดูเหตุการณ์ (ห้องจริงใช้ 1)
+    this.beatMs = 0;
+    this.sleepTimers = new Set();
     this.timeouts = { turn: 60000, quick: 20000, disconnected: 12000, ...(o.timeouts || {}) };
     this.maxTurns = o.maxTurns ?? 600;
     const chars = shuffle(Object.keys(CHARACTERS), this.rnd);
@@ -113,9 +116,27 @@ class Game {
     p.notes.push({ id: ++this.logSeq, text });
     if (p.notes.length > 30) p.notes.shift();
   }
-  arrow(e) {
-    this.events.push({ id: ++this.eventSeq, turn: this.turnNo, at: Date.now(), ...e });
-    if (this.events.length > 12) this.events.shift();
+  /**
+   * เหตุการณ์สาธารณะที่แสดงบนแถบ "เกิดอะไรขึ้น" (พร้อมลูกศร/แอนิเมชันถ้ามีผู้กระทำและเป้าหมาย)
+   * ms = เวลาที่ทุกคนควรได้เห็นเหตุการณ์นี้ก่อนเกมเดินต่อ (สะสมไว้ แล้วรอจริงใน settle)
+   */
+  feed(text, o = {}) {
+    const ms = o.ms ?? 2500;
+    this.events.push({
+      id: ++this.eventSeq, turn: this.turnNo, at: Date.now(), text, ms,
+      from: o.from ?? null, to: o.to || [], card: o.card || null, value: o.value ?? null, art: o.art || null, kind: o.kind || null,
+    });
+    if (this.events.length > 20) this.events.shift();
+    this.beatMs += ms;
+    this.log(text, !!o.silent);
+  }
+  /** หยุดรอให้ทุกคนเห็นเหตุการณ์ที่เพิ่งเกิด (pace 0 = ไม่รอ ใช้ในการทดสอบ) คืนเวลาที่รอ (ms) */
+  async settle() {
+    const ms = this.beatMs * this.pace;
+    this.beatMs = 0;
+    if (ms > 0) await new Promise((r) => { const t = setTimeout(r, ms); this.sleepTimers.add(t); });
+    if (this.aborted) throw new GameAborted();
+    return ms;
   }
 
   player(pid) { return this.players.find((p) => p.pid === pid); }
@@ -155,14 +176,14 @@ class Game {
       if (CARDS[c.type].color === 'black') {
         this.discard.push(c);
         this.queue.push({ type: c.type, by: p.seat });
-        this.log(`${this.nm(p)} จั่วได้การ์ด「${CARDS[c.type].name}」!`);
+        this.feed(`${this.nm(p)} จั่วได้การ์ด「${CARDS[c.type].name}」!`, { from: p.seat, art: ['cards', c.type], ms: 2000, kind: 'black' });
         if (c.type === 'night') break;
         continue;
       }
       p.hand.push(c);
       got++;
     }
-    if (got) this.log(`${this.nm(p)} จั่วการ์ด ${got} ใบ${reason}`);
+    if (got) this.feed(`${this.nm(p)} จั่วการ์ด ${got} ใบ${reason}`, { from: p.seat, art: ['misc', 'back'], ms: 1200, kind: 'draw' });
     return got;
   }
   /** ให้การ์ดดำที่ค้างอยู่เกิดผลตามลำดับ */
@@ -211,7 +232,7 @@ class Game {
     const run = () => entry.finish(this.botAnswer(entry.p, entry.req));
     if (!this.botDelay) { setImmediate(run); return; }
     const k = entry.req.type === 'turn' && entry.req.played ? 0.6 : 1;
-    entry.timers.push(setTimeout(run, this.botDelay * k * (0.6 + this.rnd() * 0.8)));
+    entry.timers.push(setTimeout(run, this.botDelay * k * (0.8 + this.rnd() * 0.4)));
   }
   addDisconnectTimer(entry) {
     clearTimeout(entry.dcTimer);
@@ -400,7 +421,8 @@ class Game {
     this.log('🌅 รุ่งอรุณ: แม่มดลืมตาในความมืด มองเห็นกันและกัน แล้วเลือกผู้ถือแมวดำ…');
     const seat = await this.witchVote('cat');
     this.catSeat = seat;
-    this.log(`🐈‍⬛ แมวดำไปอยู่หน้า ${this.nm(this.players[seat])}`);
+    this.feed(`🐈‍⬛ แม่มดมอบแมวดำให้ ${this.nm(this.players[seat])}`, { to: [seat], art: ['misc', 'cat'], kind: 'cat' });
+    await this.settle();
     this.phase = 'day';
     this.emit({ type: 'dawn', cat: seat });
   }
@@ -410,16 +432,17 @@ class Game {
     this.phase = 'day';
     if (p.stocked) {
       p.stocked = false;
-      this.log(`⛓ ${this.nm(p)} ติดขื่อคา ต้องข้ามตานี้`);
+      this.feed(`⛓ ${this.nm(p)} ติดขื่อคา ต้องข้ามตานี้`, { to: [p.seat], art: ['cards', 'stocks'], ms: 1800 });
+      await this.settle();
       return;
     }
     this.emit({ type: 'turn', seat: p.seat });
-    const deadline = Date.now() + this.timeouts.turn;
+    let deadline = Date.now() + this.timeouts.turn;
     let played = false;
     while (p.alive) {
       const a = await this.ask(p, { type: 'turn', played, deadline });
       if (a.action === 'end') break;
-      if (a.action === 'draw') { this.draw(p, 2); break; }
+      if (a.action === 'draw') { this.draw(p, 2); await this.settle(); break; }
       if (a.action === 'draw3') {
         this.draw(p, 3, ' (พลังแมรี)');
         if (p.hand.length) {
@@ -429,10 +452,12 @@ class Game {
           this.toDiscard([c]);
           this.log(`${this.nm(p)} ทิ้งการ์ด 1 ใบ`);
         }
+        await this.settle();
         break;
       }
       if (a.action === 'power') await this.usePower(p, a);
       else { played = true; await this.playCard(p, a); }
+      deadline += await this.settle(); // เวลาที่หยุดให้ดูไม่นับเป็นเวลาคิดของผู้เล่น
       await this.flush();
       if (played && !p.hand.length && (p.used || CHARACTERS[p.char].kind !== 'once')) break;
     }
@@ -450,8 +475,7 @@ class Game {
       let value = def.value;
       if (a.power) { value = 3; p.used = true; }
       t.red.push({ card, value });
-      this.arrow({ from: p.seat, to: [t.seat], card: card.type, value });
-      this.log(`${who} เล่น「${def.name}」ใส่ ${this.nm(t)}${a.power ? ' (เสียงกรีดร้อง นับ 3)' : ''} — กล่าวหา ${this.total(t)}/${this.threshold(t)}`);
+      this.feed(`${who} เล่น「${def.name}」ใส่ ${this.nm(t)}${a.power ? ' (เสียงกรีดร้อง นับ 3)' : ''} — กล่าวหา ${this.total(t)}/${this.threshold(t)}`, { from: p.seat, to: [t.seat], card: card.type, value });
       this.emit({ type: 'accuse', from: p.seat, to: t.seat, card: card.type, total: this.total(t) });
       if (card.type === 'evidence' && p.char === 'putnam') this.draw(p, 1, ' (พลังแอนน์)');
       await this.checkAccuse(t, p);
@@ -462,23 +486,20 @@ class Game {
     switch (card.type) {
       case 'alibi': {
         const n = this.removeAccusations(t, 3);
-        this.arrow({ from: p.seat, to: [t.seat], card: card.type });
-        this.log(`${who} เล่น「ข้อแก้ตัว」ให้ ${this.nm(t)} — ทิ้งการ์ดกล่าวหา ${n} ใบ (${this.total(t)}/${this.threshold(t)})`);
+        this.feed(`${who} เล่น「ข้อแก้ตัว」ให้ ${this.nm(t)} — ทิ้งการ์ดกล่าวหา ${n} ใบ (${this.total(t)}/${this.threshold(t)})`, { from: p.seat, to: [t.seat], card: card.type });
         this.emit({ type: 'defend', from: p.seat, to: t.seat });
         break;
       }
       case 'stocks':
         t.stocked = true;
-        this.arrow({ from: p.seat, to: [t.seat], card: card.type });
-        this.log(`${who} ใส่「ขื่อคา」${this.nm(t)} — ต้องข้ามตาถัดไป`);
+        this.feed(`${who} ใส่「ขื่อคา」${this.nm(t)} — ต้องข้ามตาถัดไป`, { from: p.seat, to: [t.seat], card: card.type });
         this.emit({ type: 'hostile', from: p.seat, to: t.seat, card: card.type });
         break;
       case 'arson': {
         const n = t.hand.length;
         this.toDiscard(t.hand);
         t.hand = [];
-        this.arrow({ from: p.seat, to: [t.seat], card: card.type });
-        this.log(`${who}「วางเพลิง」บ้าน ${this.nm(t)} — ทิ้งการ์ดในมือ ${n} ใบ`);
+        this.feed(`${who}「วางเพลิง」บ้าน ${this.nm(t)} — ทิ้งการ์ดในมือ ${n} ใบ`, { from: p.seat, to: [t.seat], card: card.type });
         this.emit({ type: 'hostile', from: p.seat, to: t.seat, card: card.type });
         break;
       }
@@ -486,8 +507,7 @@ class Game {
         const n = t.hand.length;
         other.hand.push(...t.hand);
         t.hand = [];
-        this.arrow({ from: p.seat, to: [t.seat, other.seat], card: card.type });
-        this.log(`${who}「ปล้น」การ์ด ${n} ใบจาก ${this.nm(t)} ไปให้ ${this.nm(other)}`);
+        this.feed(`${who}「ปล้น」การ์ด ${n} ใบจาก ${this.nm(t)} ไปให้ ${this.nm(other)}`, { from: p.seat, to: [t.seat, other.seat], card: card.type });
         this.emit({ type: 'hostile', from: p.seat, to: t.seat, card: card.type });
         break;
       }
@@ -504,8 +524,7 @@ class Game {
           }
           t.blue = [];
         }
-        this.arrow({ from: p.seat, to: [t.seat, other.seat], card: card.type });
-        this.log(`${who} ใช้「แพะรับบาป」ย้ายการ์ดแดง ${reds} ใบ${blues ? ` และน้ำเงิน ${blues} ใบ` : ''} จาก ${this.nm(t)} ไปหา ${this.nm(other)} (${this.total(other)}/${this.threshold(other)})`);
+        this.feed(`${who} ใช้「แพะรับบาป」ย้ายการ์ดแดง ${reds} ใบ${blues ? ` และน้ำเงิน ${blues} ใบ` : ''} จาก ${this.nm(t)} ไปหา ${this.nm(other)} (${this.total(other)}/${this.threshold(other)})`, { from: p.seat, to: [t.seat, other.seat], card: card.type });
         this.emit({ type: 'accuse', from: p.seat, to: other.seat, card: card.type, total: this.total(other) });
         await this.checkAccuse(other, p);
         return;
@@ -513,15 +532,13 @@ class Game {
       case 'curse': {
         t.blue = t.blue.filter((c) => c !== a.blue);
         this.toDiscard([a.blue]);
-        this.arrow({ from: p.seat, to: [t.seat], card: card.type });
-        this.log(`${who} ใช้「คำสาป」ทำลาย「${CARDS[a.blue.type].name}」หน้า ${this.nm(t)}`);
+        this.feed(`${who} ใช้「คำสาป」ทำลาย「${CARDS[a.blue.type].name}」หน้า ${this.nm(t)}`, { from: p.seat, to: [t.seat], card: card.type });
         this.emit({ type: 'hostile', from: p.seat, to: t.seat, card: card.type });
         break;
       }
       case 'asylum': case 'piety': case 'matchmaker':
         t.blue.push(card);
-        this.arrow({ from: p.seat, to: [t.seat], card: card.type });
-        this.log(`${who} วาง「${def.name}」หน้า ${t === p ? 'ตัวเอง' : this.nm(t)}`);
+        this.feed(`${who} วาง「${def.name}」หน้า ${t === p ? 'ตัวเอง' : this.nm(t)}`, { from: p.seat, to: [t.seat], card: card.type });
         this.update();
         return;
       default: break;
@@ -551,24 +568,27 @@ class Game {
         t.hand = t.hand.filter((c) => !b.cards.includes(c.id));
         this.toDiscard(cards);
         discardRed();
-        this.log(`💰 ${who} ติดสินบนศาล ทิ้งการ์ด 2 ใบแทนการเปิดการ์ดไต่สวน`);
+        this.feed(`💰 ${who} ติดสินบนศาล ทิ้งการ์ด 2 ใบแทนการเปิดการ์ดไต่สวน`, { to: [t.seat], art: ['chars', 'bishop'] });
         this.update();
         return;
       }
     }
-    this.log(`⚖ ${who} ถูกกล่าวหาครบ ${this.threshold(t)} แต้ม! ${this.nm(chooser)} เลือกการ์ดไต่สวนให้เปิด`);
+    this.feed(`⚖ ${who} ถูกกล่าวหาครบ ${this.threshold(t)} แต้ม! ${this.nm(chooser)} เลือกการ์ดไต่สวนให้เปิด`, { to: [t.seat], art: ['misc', 'tryalback'], ms: 1500, kind: 'trial' });
+    await this.settle();
     const idxs = this.hidden(t);
     const r = chooser.alive
       ? await this.ask(chooser, { type: 'reveal', target: t.seat, indexes: idxs, why: 'accuse' })
       : { index: idxs[Math.floor(this.rnd() * idxs.length)] };
     discardRed();
     const kind = this.reveal(t, r.index, 'ถูกไต่สวน');
+    await this.settle();
     if (kind === 'nw' && t.char === 'good' && chooser.alive && chooser !== t) {
       const i = this.discard.findIndex((c) => c.type === 'accusation');
       if (i >= 0 && !this.hasBlue(chooser, 'piety')) {
         const [c] = this.discard.splice(i, 1);
         chooser.red.push({ card: c, value: 1 });
-        this.log(`🕯 คำแช่งของ ${who}: ${this.nm(chooser)} ได้รับการกล่าวหา 1 แต้ม`);
+        this.feed(`🕯 คำแช่งของ ${who}: ${this.nm(chooser)} ได้รับการกล่าวหา 1 แต้ม`, { from: t.seat, to: [chooser.seat], card: 'accusation', value: 1 });
+        await this.settle();
         await this.checkAccuse(chooser, t);
       }
     }
@@ -579,7 +599,7 @@ class Game {
   reveal(p, index, why) {
     const c = p.tryal[index];
     c.revealed = true;
-    this.log(`🂠 ${this.nm(p)} ${why} เปิดการ์ด: ${c.kind === 'w' ? '☠ แม่มด!' : TRYALS[c.kind].name}`, true);
+    this.feed(`🂠 ${this.nm(p)} ${why} เปิดการ์ด: ${c.kind === 'w' ? '☠ แม่มด!' : TRYALS[c.kind].name}`, { to: [p.seat], art: ['tryal', c.kind], ms: why === 'สารภาพ' ? 2500 : 3500, kind: 'reveal', silent: true });
     this.emit({ type: 'reveal', seat: p.seat, kind: c.kind, why });
     if (c.kind === 'w') this.kill(p, 'ถูกเปิดโปงว่าเป็นแม่มด');
     else if (!this.hidden(p).length) this.kill(p, 'การ์ดไต่สวนถูกเปิดหมด');
@@ -599,7 +619,7 @@ class Game {
     this.toDiscard(p.blue);
     p.hand = []; p.red = []; p.blue = [];
     const role = p.tryal.some((c) => c.kind === 'w') ? 'แม่มด' : p.witch ? 'แม่มด (เคยถือการ์ดแม่มด)' : 'ชาวเมือง';
-    this.log(`💀 ${this.nm(p)} ตาย (${why}) — เป็น${role}`);
+    this.feed(`💀 ${this.nm(p)} ตาย (${why}) — เป็น${role}`, { to: [p.seat], art: ['chars', p.char], ms: 3500, kind: 'death' });
     this.emit({ type: 'death', seat: p.seat, witch: p.witch });
     for (const q of this.alive()) if (q.char === 'eproctor') this.draw(q, 1, ' (พลังเอลิซาเบธ)');
     if (matched) {
@@ -626,24 +646,21 @@ class Game {
         const c = a.target.tryal[a.index];
         this.note(p, `🔍 คุณแอบดูการ์ดใบที่ ${a.index + 1} ของ ${this.nm(a.target)}: ${TRYALS[c.kind].name}`);
         p.mind.peek = { seat: a.target.seat, id: c.id, kind: c.kind };
-        this.arrow({ from: p.seat, to: [a.target.seat], card: 'power' });
-        this.log(`🔍 ${who} ใช้พลัง「สอบสวนลับ」แอบดูการ์ดไต่สวนของ ${this.nm(a.target)} 1 ใบ`);
+        this.feed(`🔍 ${who} ใช้พลัง「สอบสวนลับ」แอบดูการ์ดไต่สวนของ ${this.nm(a.target)} 1 ใบ`, { from: p.seat, to: [a.target.seat], card: 'power' });
         break;
       }
       case 'jproctor': {
         const i = p.red.findIndex((r) => r.card.type === 'accusation');
         const [r] = p.red.splice(i, 1);
         a.target.red.push(r);
-        this.arrow({ from: p.seat, to: [a.target.seat], card: 'power' });
-        this.log(`👉 ${who} ใช้พลัง「โยนความผิด」ย้ายการ์ดกล่าวหา 1 ใบไปหา ${this.nm(a.target)} (${this.total(a.target)}/${this.threshold(a.target)})`);
+        this.feed(`👉 ${who} ใช้พลัง「โยนความผิด」ย้ายการ์ดกล่าวหา 1 ใบไปหา ${this.nm(a.target)} (${this.total(a.target)}/${this.threshold(a.target)})`, { from: p.seat, to: [a.target.seat], card: 'power' });
         this.emit({ type: 'accuse', from: p.seat, to: a.target.seat, card: 'accusation', total: this.total(a.target) });
         await this.checkAccuse(a.target, p);
         break;
       }
       case 'parris': {
         const n = this.removeAccusations(a.target, 2);
-        this.arrow({ from: p.seat, to: [a.target.seat], card: 'power' });
-        this.log(`📖 ${who} ใช้พลัง「เทศนา」ทิ้งการ์ดกล่าวหา ${n} ใบจาก ${this.nm(a.target)}`);
+        this.feed(`📖 ${who} ใช้พลัง「เทศนา」ทิ้งการ์ดกล่าวหา ${n} ใบจาก ${this.nm(a.target)}`, { from: p.seat, to: [a.target.seat], card: 'power' });
         this.emit({ type: 'defend', from: p.seat, to: a.target.seat });
         break;
       }
@@ -652,7 +669,7 @@ class Game {
         const r = await this.ask(p, { type: 'tituba', cards: top.map(cardOut) });
         const byId = new Map(top.map((c) => [c.id, c]));
         this.deck.splice(-top.length, top.length, ...r.order.map((id) => byId.get(id)).reverse());
-        this.log(`🔮 ${who} ใช้พลัง「ทำนาย」ดูการ์ด ${top.length} ใบบนกองจั่วแล้วเรียงใหม่`);
+        this.feed(`🔮 ${who} ใช้พลัง「ทำนาย」ดูการ์ด ${top.length} ใบบนกองจั่วแล้วเรียงใหม่`, { from: p.seat, art: ['chars', 'tituba'], ms: 2000 });
         break;
       }
       default: break;
@@ -665,8 +682,9 @@ class Game {
   async night() {
     this.phase = 'night';
     this.nightNo++;
-    this.log(`🌙 ราตรีที่ ${this.nightNo} มาเยือน… ทุกคนหลับตา`);
+    this.feed(`🌙 ราตรีที่ ${this.nightNo} มาเยือน… ทุกคนหลับตา`, { art: ['cards', 'night'], ms: 2000, kind: 'night' });
     this.emit({ type: 'nightStart' });
+    await this.settle();
     const victimSeat = await this.witchVote('kill');
     const cons = this.constable();
     let protect = null;
@@ -693,6 +711,7 @@ class Game {
       if (q.alive && q.char === 'nurse') this.draw(q, 2, ' (พลังรีเบคกา)');
     }
     if (!confessed.size) this.log('ไม่มีใครสารภาพ');
+    await this.settle();
     this.checkWin();
     // เช้า
     const v = victimSeat === null ? null : this.players[victimSeat];
@@ -701,14 +720,15 @@ class Game {
     else if (protect === v.seat || confessed.has(v.seat) || this.hasBlue(v, 'asylum')) text = 'รุ่งเช้า… ทุกคนยังอยู่ครบ ไม่มีใครถูกสังหาร';
     else text = null;
     if (text) {
-      this.log(`☀ ${text}`);
+      this.feed(`☀ ${text}`, { art: ['cards', 'asylum'], ms: 3500, kind: 'morning' });
       this.emit({ type: 'morning', victim: null });
     } else {
-      this.log(`☀ รุ่งเช้า… พบ ${this.nm(v)} ถูกสังหารในยามราตรี`);
+      this.feed(`☀ รุ่งเช้า… พบ ${this.nm(v)} ถูกสังหารในยามราตรี`, { to: [v.seat], art: ['cards', 'night'], ms: 2500, kind: 'morning' });
       this.kill(v, 'ถูกแม่มดสังหาร');
       this.emit({ type: 'morning', victim: v.seat });
       this.checkWin();
     }
+    await this.settle();
     // ราตรีกับกองทิ้งสับรวมกัน วางใต้กองจั่ว
     this.deck = shuffle(this.discard, this.rnd).concat(this.deck);
     this.discard = [];
@@ -718,13 +738,15 @@ class Game {
 
   async conspiracy(drawer) {
     this.phase = 'conspiracy';
-    this.log('🐈‍⬛ สมรู้ร่วมคิด!');
+    this.feed('🐈‍⬛ สมรู้ร่วมคิด! ผู้ถือแมวดำต้องเปิดการ์ด แล้วทุกคนส่งการ์ดไต่สวนต่อ', { from: drawer.seat, art: ['cards', 'conspiracy'], ms: 2500, kind: 'black' });
     this.emit({ type: 'conspiracy' });
+    await this.settle();
     const cat = this.catSeat === null ? null : this.players[this.catSeat];
     if (cat && cat.alive && this.hidden(cat).length) {
       this.log(`${this.nm(drawer)} เลือกการ์ดของผู้ถือแมวดำ (${this.nm(cat)}) ให้เปิด 1 ใบ`);
       const r = await this.ask(drawer, { type: 'reveal', target: cat.seat, indexes: this.hidden(cat), why: 'cat' });
       this.reveal(cat, r.index, 'ผู้ถือแมวดำ');
+      await this.settle();
       this.checkWin();
     } else {
       this.log('ผู้ถือแมวดำไม่อยู่แล้ว ข้ามการเปิดการ์ด');
@@ -748,7 +770,8 @@ class Game {
         if (m.card.kind === 'w') m.to.witch = true;
         this.note(m.to, `🂠 คุณได้การ์ด「${TRYALS[m.card.kind].name}」จาก ${this.nm(m.from)}${!was && m.to.witch ? ' — ตอนนี้คุณเป็นแม่มดแล้ว! 🧹' : ''}`);
       }
-      this.log('ส่งต่อการ์ดไต่สวนเรียบร้อย ใครได้การ์ดแม่มดจะกลายเป็นแม่มด…');
+      this.feed('🔄 ทุกคนส่งการ์ดไต่สวนต่อเรียบร้อย ใครได้การ์ดแม่มดจะกลายเป็นแม่มด…', { art: ['misc', 'tryalback'], ms: 3000, kind: 'black' });
+      await this.settle();
       this.checkWin();
     }
     this.phase = 'day';
@@ -789,6 +812,7 @@ class Game {
 
   abort() {
     this.aborted = true;
+    for (const t of this.sleepTimers) clearTimeout(t);
     for (const e of [...this.pending.values()]) {
       e.timers.forEach(clearTimeout);
       e.reject(new GameAborted());

@@ -243,7 +243,8 @@ class RoomManager {
       players: room.players.map((p) => ({ pid: p.pid, name: p.name, isBot: p.isBot })),
       onUpdate: () => this.broadcast(room),
       onEvent: (ev) => { if (room.game === game) this.botLines(room, talk.react(game, ev)); },
-      botDelay: this.opts.botDelay ?? 900,
+      botDelay: this.opts.botDelay ?? 2500,
+      pace: this.opts.pace ?? 1,
       timeouts: this.opts.timeouts,
       maxTurns: this.opts.maxTurns,
       firstSeat: this.opts.firstSeat,
@@ -262,7 +263,7 @@ class RoomManager {
   /** บอทพูดในแชทหลังหน่วงเวลาเล็กน้อย (ให้ดูเป็นธรรมชาติ) */
   botLines(room, lines, force = false) {
     const game = room.game;
-    const base = this.opts.talkDelay ?? Math.min(1400, (this.opts.botDelay ?? 900) * 1.2);
+    const base = this.opts.talkDelay ?? Math.min(1400, (this.opts.botDelay ?? 2500) * 1.2);
     // จำกัดความถี่: บอทแต่ละตัวพูดได้ทุก ~9 วินาที และทั้งห้องไม่เกิน 1 ประโยคต่อ ~2.5 วินาที (ยกเว้นตอบคนหรือคุยในช่องแม่มด)
     const at = Date.now();
     room.botSaid = room.botSaid || {};

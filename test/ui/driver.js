@@ -21,7 +21,7 @@ function launchOpts() {
 const launch = () => chromium.launch(launchOpts());
 
 async function startServer(opts = {}) {
-  const ctx = createServer({ botDelay: 60, talkDelay: 40, timeouts: { turn: 30000, quick: 30000, disconnected: 12000 }, ...opts });
+  const ctx = createServer({ botDelay: 60, talkDelay: 40, pace: 0.05, timeouts: { turn: 30000, quick: 30000, disconnected: 12000 }, ...opts });
   await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r));
   ctx.url = `http://127.0.0.1:${ctx.server.address().port}/`;
   ctx.close = async () => {
